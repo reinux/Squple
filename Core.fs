@@ -8,7 +8,17 @@ open System.Text.RegularExpressions
 open System.Data.Common
 open System
 open System.Threading.Tasks
-open System.Reflection.Metadata.Ecma335
+
+let private colNumToName uppercase i =
+    let a = if uppercase then 'A' else 'a'
+    (i - 1)
+    |> Array.unfold (fun n -> if n >= 0
+                              then Some ((a + char (n % 26)),
+                                         (n / 26 - 1))
+                              else None)
+    |> Array.rev
+    |> System.String
+
 
 type Table = Table of name: string
   with override x.ToString() = let (Table name) = x in name
@@ -343,11 +353,11 @@ let mkQueryString (query: Query<'ret, 'parameters>) =
           | a -> failwith $"Column list contains non-column entry: {a}"
         ) |> String.concat ", "
       | "!values" ->
-        Seq.init query.valueColumns.Length (char >> (+) 'a' >> sprintf "@_%c")
+        [ for i in 1..query.valueColumns.Length do $"@_{colNumToName false i}" ]
         |> String.concat ", "
       | "!set" ->
         query.valueColumns
-        |> List.mapi (fun i c -> $"{colNameOnly c} = @_{'a' + (char) i}")
+        |> List.mapi (fun i c -> $"{colNameOnly c} = @_{colNumToName false i}")
         |> String.concat ", "
       | x -> x)
 
@@ -363,7 +373,7 @@ let setArgs (cmd: DbCommand) (args: 'parameters) (additionalArgs: AnyQueryArg li
   let args =
     if Reflection.FSharpType.IsTuple(typeof<'parameters>) then
       Reflection.FSharpValue.GetTupleFields(args)
-      |> Seq.mapi (fun i a -> (arg $"@_{(char) i + 'a'}" a) :> AnyQueryArg)
+      |> Seq.mapi (fun i a -> (arg $"@_{colNumToName false i}" a) :> AnyQueryArg)
     elif typeof<'parameters> = typeof<unit> then []
     else [ (arg "@_a" args) :> AnyQueryArg ]
     |> Seq.append additionalArgs
