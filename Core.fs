@@ -17,7 +17,7 @@ let private colNumToName uppercase i =
                                          (n / 26 - 1))
                               else None)
     |> Array.rev
-    |> System.String
+    |> String
 
 
 type Table = Table of name: string
@@ -31,7 +31,7 @@ type AnyQueryArg =
 and QueryArg<'t> =
   | QueryArg of string * 't
   override x.ToString() = let (QueryArg (name, _)) = x in name
-  member x.Key = let (QueryArg (name, _)) = x in x
+  member x.Key = let (QueryArg _ ) = x in x
   member x.Value = let (QueryArg (_, v)) = x in v
   interface AnyQueryArg with
     member x.QueryArg =
@@ -44,7 +44,11 @@ and QueryArg<'t> =
   //  match x with
   //  | QueryArg s -> QueryArg<'q> s
 
-let arg name v = QueryArg(name, v)
+let arg (name:string) v =
+  if not <| name.StartsWith "@" then
+    QueryArg("@"+name, v)
+  else
+    QueryArg(name, v)
 
 [<NoEquality; NoComparison>]
 type Selectable<'a> =
@@ -138,7 +142,7 @@ type Selectable<'a> =
   member x.ColName =
     match x with
     | Col (_, n) -> n
-    | Expr e -> failwith "Expression does not have a column name"
+    | Expr _ -> failwith "Expression does not have a column name"
     | Aliased (_, n) -> n
 
   member x.As(name: string) =
@@ -147,7 +151,7 @@ type Selectable<'a> =
   member x.From(table: Table) : Selectable<'a> =
     match x with
     | Col (_, n) -> Col(table, n)
-    | Expr e -> failwith "Cannot take expression from table"
+    | Expr _ -> failwith "Cannot take expression from table"
     | Aliased (_, n) -> Aliased (x.From table, n)
 
 and AnySelectable =
@@ -165,7 +169,7 @@ let rec colNameOnly (selectable:AnySelectable) =
   match selectable.Selectable with
   | Col (_, n) -> Expr n
   | Expr _ as e-> e
-  | Aliased (a, n) -> colNameOnly a
+  | Aliased (a, _) -> colNameOnly a
 
 type Query<'ret, 'parameters> = {
   queryTemplate: string
@@ -203,7 +207,7 @@ let rec convWrite v =
            && t.GetGenericTypeDefinition() = typedefof<_ option> then
         match t.GetGenericArguments() with
         | [||] -> DBNull.Value :> obj
-        | [| some |] -> convWrite <| t.GetProperty("Value").GetValue v
+        | [| _ |] -> convWrite <| t.GetProperty("Value").GetValue v
         | _ -> failwith "Error converting argument for write to database: option has more than one generic argument"
         // TODO: convert arrays... more complicated than it seems
       //elif v :? Array then
@@ -234,7 +238,7 @@ module DataReader =
   let getDouble (r: IDataReader) = r.GetDouble
   let getDecimal (r: IDataReader) = r.GetDecimal
   let getBoolean (r: IDataReader) = r.GetBoolean
-  let getObj (r: IDataReader) (i: int) = r.[i]
+  let getObj (r: IDataReader) (i: int) = r[i]
   let getName (r: IDataReader) = r.GetName
   let getDateTime (r: IDataReader) = r.GetDateTime
   let isDbNull (r: IDataReader) = r.IsDBNull
@@ -244,7 +248,7 @@ module DataReader =
     if r.IsDBNull i then null
     else
       try r.GetString i
-      with :? InvalidCastException as e ->
+      with :? InvalidCastException ->
         let o = (getObj (r: IDataReader) i).ToString()
         o
 
@@ -349,7 +353,7 @@ let mkQueryString (query: Query<'ret, 'parameters>) =
       | "!columns" ->
         query.valueColumns |> List.map (fun c ->
           match c.Selectable with
-          | Col (t, n) -> n
+          | Col (_, n) -> n
           | a -> failwith $"Column list contains non-column entry: {a}"
         ) |> String.concat ", "
       | "!values" ->
@@ -357,7 +361,7 @@ let mkQueryString (query: Query<'ret, 'parameters>) =
         |> String.concat ", "
       | "!set" ->
         query.valueColumns
-        |> List.mapi (fun i c -> $"{colNameOnly c} = @_{colNumToName false i}")
+        |> List.mapi (fun i c -> $"{colNameOnly c} = @_{colNumToName false (i+1)}")
         |> String.concat ", "
       | x -> x)
 
@@ -373,7 +377,7 @@ let setArgs (cmd: DbCommand) (args: 'parameters) (additionalArgs: AnyQueryArg li
   let args =
     if Reflection.FSharpType.IsTuple(typeof<'parameters>) then
       Reflection.FSharpValue.GetTupleFields(args)
-      |> Seq.mapi (fun i a -> (arg $"@_{colNumToName false i}" a) :> AnyQueryArg)
+      |> Seq.mapi (fun i a -> (arg $"@_{colNumToName false (i+1)}" a) :> AnyQueryArg)
     elif typeof<'parameters> = typeof<unit> then []
     else [ (arg "@_a" args) :> AnyQueryArg ]
     |> Seq.append additionalArgs
@@ -384,67 +388,68 @@ let setArgs (cmd: DbCommand) (args: 'parameters) (additionalArgs: AnyQueryArg li
     |> ignore
 
 let execNonQ conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : int =
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    cmd.ExecuteNonQuery()
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  cmd.ExecuteNonQuery()
 
 let execNonQAsync conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : Task<int> =
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    cmd.ExecuteNonQueryAsync()
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  cmd.ExecuteNonQueryAsync()
 
 let execList conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : 'ret list =
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    use reader = cmd.ExecuteReader()
-    [ while reader.Read() do
-        query.readRow reader
-    ]
-
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  use reader = cmd.ExecuteReader()
+  [ while reader.Read() do
+      query.readRow reader
+  ]
+    
 let execListAsync conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : Task<'ret list> =
   let results = ResizeArray()
-  let rec readRow (reader:DbDataReader) = task {
-    let! success = reader.ReadAsync()
-    if success then
-      results.Add(query.readRow reader)
-      return! readRow reader
-  }
+  // let rec readRow (reader:DbDataReader) = task {
+  //   let! success = reader.ReadAsync()
+  //   if success then
+  //     results.Add(query.readRow reader)
+  //     return! readRow reader
+  // }
   task {
     use cmd = prepareCommand conn query
     setArgs cmd args additionalArgs
     use! reader = cmd.ExecuteReaderAsync()
-    do! readRow reader
+    while! reader.ReadAsync() do
+      results.Add(query.readRow reader)
     return results |> Seq.toList
 }
 
 let execHead conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : 'ret =
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    use reader = cmd.ExecuteReader()
-    reader.ReadAsync() |> ignore
-    query.readRow reader
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  use reader = cmd.ExecuteReader()
+  reader.ReadAsync() |> ignore
+  query.readRow reader
 
 let execHeadAsync conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : Task<'ret> = task {
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    use! reader = cmd.ExecuteReaderAsync()
-    let! _ = reader.ReadAsync()
-    return query.readRow reader
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  use! reader = cmd.ExecuteReaderAsync()
+  let! _ = reader.ReadAsync()
+  return query.readRow reader
 }
-    
+  
 let execTryHeadAsync conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : Task<'ret option> = task {
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    use! reader = cmd.ExecuteReaderAsync()
-    let! readResult = reader.ReadAsync()
-    return if readResult = true then
-             Some (query.readRow reader)
-           else
-             None
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  use! reader = cmd.ExecuteReaderAsync()
+  let! readResult = reader.ReadAsync()
+  return if readResult = true then
+           Some (query.readRow reader)
+         else
+           None
 }
 
 let execTryHead conn additionalArgs (args: 'parameters) (query:Query<'ret, 'parameters>) : 'ret option =
-    use cmd = prepareCommand conn query
-    setArgs cmd args additionalArgs
-    use reader = cmd.ExecuteReader()
-    if reader.Read() then Some (query.readRow reader) else None
+  use cmd = prepareCommand conn query
+  setArgs cmd args additionalArgs
+  use reader = cmd.ExecuteReader()
+  if reader.Read() then Some (query.readRow reader) else None
