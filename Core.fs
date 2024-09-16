@@ -1,6 +1,10 @@
 ﻿[<AutoOpen>]
 module Squple.Core
 
+// TODO: flatten tuples into lists, evaluate, and then unflatten again
+// (would this even work?)
+// https://stackoverflow.com/a/43920984/388626
+
 //#nowarn "86"
 
 open System.Data
